@@ -23,6 +23,8 @@ pub const Editor = struct {
     /// Its text; null if it could not be opened (and `message` says why).
     doc: ?*ui.TextDocument,
     message: []const u8 = "",
+    /// Colours its code, if it is code (see syntax.zig).
+    highlighter: ?ui.TextArea.Highlighter = null,
     saved: Saved = .saved,
     on_changed: ?ui.Callback = null,
     on_close: ?ui.Callback = null,
@@ -34,7 +36,7 @@ pub const Editor = struct {
         const t = cx.theme();
         const name = if (self.path) |p| std.fs.path.basename(p) else "Text Editor";
         const body = if (self.doc) |d|
-            cx.make(ui.TextArea{ .doc = d, .size = 18, .autofocus = true, .on_changed = self.on_changed })
+            cx.make(ui.TextArea{ .doc = d, .size = 18, .autofocus = true, .on_changed = self.on_changed, .highlighter = self.highlighter })
         else
             cx.make(ui.Center{ .child = cx.make(ui.Padding{ .padding = .all(24), .child = cx.make(ui.Text{
                 .text = if (self.path == null) "Open a text file from Files to edit it: pick it, then Edit. New text file there makes one." else self.message,
@@ -74,6 +76,12 @@ fn overflows(node: *ui.Node) bool {
     return false;
 }
 
+fn findType(n: *ui.Node, comptime T: type) ?*ui.Node {
+    if (n.widget.is(T)) return n;
+    for (n.children.items) |ch| if (findType(ch, T)) |f| return f;
+    return null;
+}
+
 fn findText(n: *ui.Node, text: []const u8) ?*ui.Node {
     if (n.widget.as(ui.Text)) |tx| if (std.mem.eql(u8, tx.text, text)) return n;
     for (n.children.items) |ch| if (findText(ch, text)) |f| return f;
@@ -101,7 +109,19 @@ test "the text fills the window; whether it is saved, and without a file how to 
     try testing.expect(findText(u.root.?, "Not saved: there is no space left") != null);
     // The text has the keyboard.
     try testing.expect(u.focused != null and u.focused.?.widget.is(ui.TextArea));
+    // Code is coloured, as the text changes.
+    var code = try ui.TextDocument.init(testing.allocator, "const x = @import(\"std\"); // here\n");
+    defer code.deinit();
+    u.frame(1280, 720, 3, Editor{ .path = "/data/user/a.zig", .doc = &code, .highlighter = @import("syntax.zig").zig });
+    code.moveTo(code.text().len, false);
+    code.insert("fn f() void {}\n");
+    u.frame(1280, 720, 4, Editor{ .path = "/data/user/a.zig", .doc = &code, .highlighter = @import("syntax.zig").zig });
+    const area = findType(u.root.?, ui.TextArea).?;
+    const st = area.state(ui.TextArea.State);
+    try testing.expectEqual(code.text().len, st.colours.items.len);
+    try testing.expectEqual(ui.Highlight.keyword, st.colours.items[0]);
+    try testing.expectEqual(ui.Highlight.function, st.colours.items[code.text().len - 12]);
     // No file.
-    u.frame(1280, 720, 3, Editor{ .path = null, .doc = null });
+    u.frame(1280, 720, 5, Editor{ .path = null, .doc = null });
     try testing.expect(findText(u.root.?, "Open a text file from Files to edit it: pick it, then Edit. New text file there makes one.") != null);
 }

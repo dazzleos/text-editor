@@ -98,7 +98,7 @@ const testing = std.testing;
 
 test "reading and saving a text file, whole" {
     var dir_buf: [64]u8 = undefined;
-    const dir = try std.fmt.bufPrintZ(&dir_buf, "/tmp/dazzle-editor-test-{d}", .{linux.getpid()});
+    const dir = try std.fmt.bufPrintZ(&dir_buf, "/tmp/dazzle-text-editor-test-{d}", .{linux.getpid()});
     _ = linux.mkdir(dir, 0o755);
     defer sys.files.removeTree(dir);
     var path_buf: [128]u8 = undefined;

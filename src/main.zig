@@ -1,12 +1,13 @@
 //! Dazzle's text editor: edits a text file, saving it as it goes (a
 //! moment after typing stops, and when the window closes; see file.zig).
 //! Files starts it with the file to edit (its Edit button, and New text
-//! file); it says it opens plain text in dazzle-editor.handles, beside it.
+//! file); it says it opens plain text in dazzle-text-editor.handles,
+//! beside it.
 //!
-//!     dazzle-editor [file]
+//!     dazzle-text-editor [file]
 //!
-//! Without a file it says how to open one. It runs until its window is
-//! closed.
+//! JSON, Python and Zig are coloured (see syntax.zig). Without a file it
+//! says how to open one. It runs until its window is closed.
 
 const std = @import("std");
 const sys = @import("sys");
@@ -18,6 +19,7 @@ const ui = @import("ui");
 const wayland = @import("wayland");
 const file = @import("file.zig");
 const view = @import("view.zig");
+const syntax = @import("syntax.zig");
 
 const print = sys.print;
 
@@ -32,7 +34,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     _ = args.skip();
     const path: ?[:0]const u8 = if (args.next()) |p| std.mem.span(p.ptr) else null;
     run(init, path) catch |err| {
-        print("dazzle-editor: error: {s}\n", .{@errorName(err)});
+        print("dazzle-text-editor: error: {s}\n", .{@errorName(err)});
         return 1;
     };
     return 0;
@@ -51,7 +53,7 @@ fn run(init: std.process.Init.Minimal, path: ?[:0]const u8) !void {
     locale.current = locale.load().language;
     const gpa = std.heap.page_allocator;
     var dev = vc4.device.openRender() catch |err| {
-        print("dazzle-editor: no GPU ({s})\n", .{@errorName(err)});
+        print("dazzle-text-editor: no GPU ({s})\n", .{@errorName(err)});
         return err;
     };
     const win = try openWindow(gpa, init, &dev, if (path) |p| std.fs.path.basename(p) else "Text Editor");
@@ -77,6 +79,8 @@ fn run(init: std.process.Init.Minimal, path: ?[:0]const u8) !void {
         } else |err| message = file.describeOpenError(err);
     }
     defer if (doc) |*d| d.deinit();
+    // Code is coloured, by the file's name.
+    const highlighter = if (path) |p| syntax.highlighter(syntax.languageOf(std.fs.path.basename(p))) else null;
     var saved_version: u64 = 0;
     var save_failure: ?[]const u8 = null;
     var changes: Changes = .{};
@@ -95,7 +99,7 @@ fn run(init: std.process.Init.Minimal, path: ?[:0]const u8) !void {
             break :blk win.wait(timeout);
         } else win.poll();
         waited catch |err| {
-            if (err == error.ServerError) print("dazzle-editor: compositor error: {s}\n", .{win.conn.errorMessage()});
+            if (err == error.ServerError) print("dazzle-text-editor: compositor error: {s}\n", .{win.conn.errorMessage()});
             saveNow(path, doc, &saved_version, &save_failure);
             return err;
         };
@@ -142,6 +146,7 @@ fn run(init: std.process.Init.Minimal, path: ?[:0]const u8) !void {
                 .path = path,
                 .doc = d,
                 .message = message,
+                .highlighter = highlighter,
                 .saved = saved,
                 .on_changed = .of(&changes, Changes.changed),
                 .on_close = .of(&controls, app.Controls.close),
@@ -176,7 +181,7 @@ fn saveNow(path: ?[:0]const u8, doc: ?ui.TextDocument, saved_version: *u64, fail
         failure.* = null;
     } else |err| {
         failure.* = file.describeSaveError(err);
-        print("dazzle-editor: cannot save {s}: {s}\n", .{ p, @errorName(err) });
+        print("dazzle-text-editor: cannot save {s}: {s}\n", .{ p, @errorName(err) });
     }
 }
 
@@ -184,18 +189,19 @@ fn openWindow(gpa: std.mem.Allocator, init: std.process.Init.Minimal, dev: *vc4.
     const Environ = std.process.Environ;
     var path_buf: [128]u8 = undefined;
     const path = wayland.client.socketPath(&path_buf, Environ.getPosix(init.environ, "XDG_RUNTIME_DIR"), Environ.getPosix(init.environ, "WAYLAND_DISPLAY")) catch {
-        print("dazzle-editor: WAYLAND_DISPLAY needs XDG_RUNTIME_DIR\n", .{});
+        print("dazzle-text-editor: WAYLAND_DISPLAY needs XDG_RUNTIME_DIR\n", .{});
         return error.NoCompositor;
     };
     const win = app.Window.open(gpa, .device(dev), path, title) catch |err| {
-        print("dazzle-editor: cannot open a window on {s} ({s})\n", .{ path, @errorName(err) });
+        print("dazzle-text-editor: cannot open a window on {s} ({s})\n", .{ path, @errorName(err) });
         return err;
     };
-    try win.setAppId("dazzle-editor");
+    try win.setAppId("dazzle-text-editor");
     return win;
 }
 
 test {
     _ = file;
     _ = view;
+    _ = syntax;
 }
