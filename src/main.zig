@@ -129,6 +129,7 @@ fn run(init: std.process.Init.Minimal, path: ?[:0]const u8) !void {
             .touch_motion => |t| window_ui.touchMotion(t.id, t.pos),
             .touch_up => |id| window_ui.touchUp(id),
             .touch_cancel => window_ui.touchCancel(),
+            .relative_motion, .pointer_locked => {},
         };
         // Saved a moment after typing stops.
         if (changes.at) |at| if (now >= at + file.save_delay_ns) {
