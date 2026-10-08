@@ -143,6 +143,7 @@ fn run(init: std.process.Init.Minimal, path: ?[:0]const u8) !void {
             dirty = false;
             const d: ?*ui.TextDocument = if (doc) |*dd| dd else null;
             const saved: view.Saved = if (save_failure) |why| .{ .failed = why } else if (d != null and d.?.version != saved_version) .changed else .saved;
+            window_ui.fullscreen = win.fullscreen;
             window_ui.frame(width, height, now, view.Editor{
                 .path = path,
                 .doc = d,
