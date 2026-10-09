@@ -8,6 +8,9 @@ const ui = @import("ui");
 
 pub const min_size = [2]u32{ 480, 320 };
 
+/// The size the window opens at: about 100 columns of text, and 30 lines.
+pub const open_size = [2]u32{ 960, 720 };
+
 /// Whether what is shown is saved.
 pub const Saved = union(enum) {
     saved,
