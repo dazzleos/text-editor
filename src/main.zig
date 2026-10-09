@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     _ = args.skip();
     const path: ?[:0]const u8 = if (args.next()) |p| std.mem.span(p.ptr) else null;
     run(init, path) catch |err| {
-        print("dazzle-text-editor: error: {s}\n", .{@errorName(err)});
+        print(sys.log_error ++ "dazzle-text-editor: error: {s}\n", .{@errorName(err)});
         return 1;
     };
     return 0;
@@ -53,7 +53,7 @@ fn run(init: std.process.Init.Minimal, path: ?[:0]const u8) !void {
     locale.current = locale.load().language;
     const gpa = std.heap.page_allocator;
     var dev = vc4.device.openRender() catch |err| {
-        print("dazzle-text-editor: no GPU ({s})\n", .{@errorName(err)});
+        print(sys.log_error ++ "dazzle-text-editor: no GPU ({s})\n", .{@errorName(err)});
         return err;
     };
     const win = try openWindow(gpa, init, &dev, if (path) |p| std.fs.path.basename(p) else "Text Editor");
@@ -99,7 +99,7 @@ fn run(init: std.process.Init.Minimal, path: ?[:0]const u8) !void {
             break :blk win.wait(timeout);
         } else win.poll();
         waited catch |err| {
-            if (err == error.ServerError) print("dazzle-text-editor: compositor error: {s}\n", .{win.conn.errorMessage()});
+            if (err == error.ServerError) print(sys.log_error ++ "dazzle-text-editor: compositor error: {s}\n", .{win.conn.errorMessage()});
             saveNow(path, doc, &saved_version, &save_failure);
             return err;
         };
@@ -183,7 +183,7 @@ fn saveNow(path: ?[:0]const u8, doc: ?ui.TextDocument, saved_version: *u64, fail
         failure.* = null;
     } else |err| {
         failure.* = file.describeSaveError(err);
-        print("dazzle-text-editor: cannot save {s}: {s}\n", .{ p, @errorName(err) });
+        print(sys.log_warning ++ "dazzle-text-editor: cannot save {s}: {s}\n", .{ p, @errorName(err) });
     }
 }
 
@@ -195,7 +195,7 @@ fn openWindow(gpa: std.mem.Allocator, init: std.process.Init.Minimal, dev: *vc4.
         return error.NoCompositor;
     };
     const win = app.Window.open(gpa, .device(dev), path, title) catch |err| {
-        print("dazzle-text-editor: cannot open a window on {s} ({s})\n", .{ path, @errorName(err) });
+        print(sys.log_warning ++ "dazzle-text-editor: cannot open a window on {s} ({s})\n", .{ path, @errorName(err) });
         return err;
     };
     try win.setAppId("dazzle-text-editor");
