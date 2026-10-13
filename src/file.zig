@@ -94,6 +94,121 @@ fn errorFrom(e: linux.E) SaveError {
     };
 }
 
+pub const user_dir = "/data/user";
+pub const recent_file = "/data/user/.recent-text-files";
+pub const max_recent = 10;
+
+/// A numbered name for a new text file in `dir` ("Note 1.txt", "Note 2.txt", …).
+pub fn defaultNewName(buf: []u8, dir: []const u8) []const u8 {
+    if (sys.files.numberedName(buf, dir, "Note", "txt")) |full| {
+        return std.fs.path.basename(full);
+    }
+    return "Note 1.txt";
+}
+
+pub const MakeError = error{ EmptyName, BadName, Exists, AccessDenied, NoSpace, Unexpected };
+
+pub fn describeMakeError(err: MakeError) []const u8 {
+    return switch (err) {
+        error.EmptyName => "give the new file a name",
+        error.BadName => "a file name cannot have / in it",
+        error.Exists => "there is already something with that name",
+        error.AccessDenied => "you are not allowed to make a file here",
+        error.NoSpace => "there is no space left",
+        error.Unexpected => "it could not be made",
+    };
+}
+
+/// Makes an empty text file in `dir` named `raw_name` (adding `.txt` if it
+/// has no extension) and returns its path in `buf`.
+pub fn makeNewFile(buf: []u8, dir: []const u8, raw_name: []const u8) MakeError![:0]const u8 {
+    const trimmed = std.mem.trim(u8, raw_name, " ");
+    if (trimmed.len == 0) return error.EmptyName;
+    if (std.mem.eql(u8, trimmed, ".") or std.mem.eql(u8, trimmed, "..")) return error.BadName;
+    if (std.mem.indexOfAny(u8, trimmed, "/\x00") != null) return error.BadName;
+    const dot = std.mem.lastIndexOfScalar(u8, trimmed, '.');
+    const has_ext = if (dot) |d| d > 0 and d + 1 < trimmed.len else false;
+    const suffix = if (has_ext) "" else ".txt";
+    const path = std.fmt.bufPrintZ(buf, "{s}/{s}{s}", .{ dir, trimmed, suffix }) catch return error.Unexpected;
+    sys.files.writeNew(path, "") catch |err| return switch (err) {
+        error.Exists => error.Exists,
+        error.AccessDenied => error.AccessDenied,
+        else => error.Unexpected,
+    };
+    return path;
+}
+
+/// Recently opened text files, newest first, kept in `recent_file`.
+pub const Recent = struct {
+    gpa: std.mem.Allocator,
+    items: std.ArrayList([:0]u8) = .empty,
+
+    pub fn load(gpa: std.mem.Allocator, list_path: [:0]const u8) Recent {
+        var r: Recent = .{ .gpa = gpa };
+        const data = sys.readFileAlloc(gpa, list_path, 64 * 1024) catch return r;
+        defer gpa.free(data);
+        var lines = std.mem.splitScalar(u8, data, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0 or r.items.items.len >= max_recent) continue;
+            if (r.indexOf(line) != null) continue;
+            const copy = gpa.dupeZ(u8, line) catch break;
+            if (linux.errno(linux.access(copy.ptr, linux.F_OK)) != .SUCCESS) {
+                gpa.free(copy);
+                continue;
+            }
+            r.items.append(gpa, copy) catch {
+                gpa.free(copy);
+                break;
+            };
+        }
+        return r;
+    }
+
+    pub fn deinit(self: *Recent) void {
+        for (self.items.items) |p| self.gpa.free(p);
+        self.items.deinit(self.gpa);
+    }
+
+    pub fn slice(self: *const Recent) []const [:0]const u8 {
+        return self.items.items;
+    }
+
+    fn indexOf(self: *const Recent, path: []const u8) ?usize {
+        for (self.items.items, 0..) |item, i| {
+            if (std.mem.eql(u8, item, path)) return i;
+        }
+        return null;
+    }
+
+    /// Puts `file_path` at the top of the list and writes `list_path`.
+    pub fn record(self: *Recent, list_path: []const u8, file_path: []const u8) void {
+        if (self.indexOf(file_path)) |i| {
+            const existing = self.items.orderedRemove(i);
+            self.items.insert(self.gpa, 0, existing) catch {
+                self.gpa.free(existing);
+                return;
+            };
+        } else {
+            const copy = self.gpa.dupeZ(u8, file_path) catch return;
+            self.items.insert(self.gpa, 0, copy) catch {
+                self.gpa.free(copy);
+                return;
+            };
+            while (self.items.items.len > max_recent) {
+                const dropped = self.items.pop().?;
+                self.gpa.free(dropped);
+            }
+        }
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.gpa);
+        for (self.items.items) |p| {
+            out.appendSlice(self.gpa, p) catch return;
+            out.append(self.gpa, '\n') catch return;
+        }
+        save(list_path, out.items) catch {};
+    }
+};
+
 const testing = std.testing;
 
 test "reading and saving a text file, whole" {
@@ -127,3 +242,46 @@ test "reading and saving a text file, whole" {
     // A folder that is not there.
     try testing.expectError(error.Unexpected, save("/nonexistent/notes.txt", "x"));
 }
+
+test "making a new file with a pre-populated name, and remembering recent files" {
+    var dir_buf: [64]u8 = undefined;
+    const dir = try std.fmt.bufPrintZ(&dir_buf, "/tmp/dazzle-text-editor-recent-{d}", .{linux.getpid()});
+    _ = linux.mkdir(dir, 0o755);
+    defer sys.files.removeTree(dir);
+
+    var name_buf: [256]u8 = undefined;
+    try testing.expectEqualStrings("Note 1.txt", defaultNewName(&name_buf, dir));
+
+    var path1_buf: [256]u8 = undefined;
+    const p1 = try makeNewFile(&path1_buf, dir, defaultNewName(&name_buf, dir));
+    try testing.expect(std.mem.endsWith(u8, p1, "/Note 1.txt"));
+    try testing.expectEqualStrings("Note 2.txt", defaultNewName(&name_buf, dir));
+
+    // Without an extension, .txt is added; existing names and bad names fail.
+    var path2_buf: [256]u8 = undefined;
+    const p2 = try makeNewFile(&path2_buf, dir, "todo");
+    try testing.expect(std.mem.endsWith(u8, p2, "/todo.txt"));
+    try testing.expectError(error.Exists, makeNewFile(&name_buf, dir, "todo.txt"));
+    try testing.expectError(error.EmptyName, makeNewFile(&name_buf, dir, "   "));
+    try testing.expectError(error.BadName, makeNewFile(&name_buf, dir, "a/b"));
+
+    // Recent files: newest first, deduplicated, and missing files skipped on load.
+    var list_buf: [256]u8 = undefined;
+    const list_path = try std.fmt.bufPrintZ(&list_buf, "{s}/.recent-text-files", .{dir});
+    var r = Recent.load(testing.allocator, list_path);
+    try testing.expectEqual(@as(usize, 0), r.slice().len);
+    r.record(list_path, p1);
+    r.record(list_path, p2);
+    r.record(list_path, p1);
+    try testing.expectEqual(@as(usize, 2), r.slice().len);
+    try testing.expectEqualStrings(p1, r.slice()[0]);
+    try testing.expectEqualStrings(p2, r.slice()[1]);
+    r.deinit();
+
+    _ = linux.unlink(p2);
+    var r2 = Recent.load(testing.allocator, list_path);
+    defer r2.deinit();
+    try testing.expectEqual(@as(usize, 1), r2.slice().len);
+    try testing.expectEqualStrings(p1, r2.slice()[0]);
+}
+

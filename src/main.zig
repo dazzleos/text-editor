@@ -7,7 +7,8 @@
 //!     dazzle-text-editor [file]
 //!
 //! JSON, Python and Zig are coloured (see syntax.zig). Without a file it
-//! says how to open one. It runs until its window is closed.
+//! shows a "New File" button with a pre-populated name and a list of
+//! recently opened files below it. It runs until its window is closed.
 
 const std = @import("std");
 const sys = @import("sys");
@@ -40,17 +41,59 @@ const Changes = struct {
     }
 };
 
-fn run(init: std.process.Init.Minimal, path: ?[:0]const u8) !void {
+/// Actions on the start screen (when opened without a file).
+const StartActions = struct {
+    name_buf: [ui.TextField.capacity]u8 = undefined,
+    name_len: usize = 0,
+    make_requested: bool = false,
+    open_path: ?[:0]const u8 = null,
+
+    fn initName(s: *StartActions, initial: []const u8) void {
+        const n = @min(initial.len, s.name_buf.len);
+        @memcpy(s.name_buf[0..n], initial[0..n]);
+        s.name_len = n;
+    }
+
+    fn name(s: *const StartActions) []const u8 {
+        return s.name_buf[0..s.name_len];
+    }
+
+    fn setName(s: *StartActions, text: []const u8) void {
+        const n = @min(text.len, s.name_buf.len);
+        @memcpy(s.name_buf[0..n], text[0..n]);
+        s.name_len = n;
+    }
+
+    fn requestMake(s: *StartActions) void {
+        s.make_requested = true;
+    }
+
+    fn requestOpen(s: *StartActions, p: [:0]const u8) void {
+        s.open_path = p;
+    }
+};
+
+fn run(init: std.process.Init.Minimal, initial_path: ?[:0]const u8) !void {
     locale.current = locale.load().language;
     const gpa = std.heap.page_allocator;
     const a = try ui.App.open(gpa, init.environ, .{
-        .title = if (path) |p| std.fs.path.basename(p) else "Text Editor",
+        .title = if (initial_path) |p| std.fs.path.basename(p) else "Text Editor",
         .app_id = "dazzle-text-editor",
         .size = view.open_size,
         .min_size = view.min_size,
     });
     defer a.close();
 
+    var recent = file.Recent.load(gpa, file.recent_file);
+    defer recent.deinit();
+
+    var default_buf: [256]u8 = undefined;
+    const default_name = file.defaultNewName(&default_buf, file.user_dir);
+    var start: StartActions = .{};
+    start.initName(default_name);
+
+    var path_buf: [4096]u8 = undefined;
+    var path: ?[:0]const u8 = initial_path;
     // The file's text, if it can be edited.
     var doc: ?ui.TextDocument = null;
     var message: []const u8 = "";
@@ -58,11 +101,12 @@ fn run(init: std.process.Init.Minimal, path: ?[:0]const u8) !void {
         if (file.read(gpa, p)) |text| {
             defer gpa.free(text);
             doc = try ui.TextDocument.init(gpa, text);
+            recent.record(file.recent_file, p);
         } else |err| message = file.describeOpenError(err);
     }
     defer if (doc) |*d| d.deinit();
     // Code is coloured, by the file's name.
-    const highlighter = if (path) |p| syntax.highlighter(syntax.languageOf(std.fs.path.basename(p))) else null;
+    var highlighter: ?ui.TextArea.Highlighter = if (path) |p| syntax.highlighter(syntax.languageOf(std.fs.path.basename(p))) else null;
     var saved_version: u64 = 0;
     var save_failure: ?[]const u8 = null;
     var changes: Changes = .{};
@@ -76,6 +120,34 @@ fn run(init: std.process.Init.Minimal, path: ?[:0]const u8) !void {
         if (!try a.step(timeout)) return;
         const now = sys.nowNs();
         a.takeInput();
+
+        if (start.make_requested) {
+            start.make_requested = false;
+            if (file.makeNewFile(&path_buf, file.user_dir, start.name())) |created| {
+                doc = try ui.TextDocument.init(gpa, "");
+                path = created;
+                highlighter = syntax.highlighter(syntax.languageOf(std.fs.path.basename(created)));
+                message = "";
+                recent.record(file.recent_file, created);
+            } else |err| {
+                message = file.describeMakeError(err);
+            }
+            a.dirty = true;
+        }
+        if (start.open_path) |open_p| {
+            start.open_path = null;
+            const owned = std.fmt.bufPrintZ(&path_buf, "{s}", .{open_p}) catch open_p;
+            path = owned;
+            if (file.read(gpa, owned)) |text| {
+                defer gpa.free(text);
+                doc = try ui.TextDocument.init(gpa, text);
+                highlighter = syntax.highlighter(syntax.languageOf(std.fs.path.basename(owned)));
+                message = "";
+                recent.record(file.recent_file, owned);
+            } else |err| message = file.describeOpenError(err);
+            a.dirty = true;
+        }
+
         // Saved a moment after typing stops.
         if (changes.at) |at| if (now >= at + file.save_delay_ns) {
             changes.at = null;
@@ -91,6 +163,11 @@ fn run(init: std.process.Init.Minimal, path: ?[:0]const u8) !void {
             .message = message,
             .highlighter = highlighter,
             .saved = saved,
+            .default_name = default_name,
+            .recent = recent.slice(),
+            .on_name_changed = .of(&start, StartActions.setName),
+            .on_new_file = .of(&start, StartActions.requestMake),
+            .on_open_recent = .of(&start, StartActions.requestOpen),
             .on_changed = .of(&changes, Changes.changed),
         });
     }
@@ -115,3 +192,4 @@ test {
     _ = view;
     _ = syntax;
 }
+
