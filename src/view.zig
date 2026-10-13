@@ -35,7 +35,17 @@ pub const Editor = struct {
     on_drag: ?ui.Callback = null,
     maximized: bool = true,
 
-    pub fn build(self: *const Editor, cx: *ui.Context) ui.Widget {
+    pub const State = struct {
+        dismissed: bool = false,
+        last_err_buf: [128]u8 = undefined,
+        last_err_len: u8 = 0,
+
+        fn dismiss(st: *State) void {
+            st.dismissed = true;
+        }
+    };
+
+    pub fn build(self: *const Editor, cx: *ui.Context, state: *State) ui.Widget {
         const t = cx.theme();
         const name = if (self.path) |p| std.fs.path.basename(p) else "Text Editor";
         const body = if (self.doc) |d|
@@ -46,10 +56,24 @@ pub const Editor = struct {
                 .style = .{ .size = 20, .color = t.on_surface_variant },
                 .text_align = .center,
             }) }) });
+        const err_msg: []const u8 = switch (self.saved) {
+            .failed => |why| cx.fmt("Not saved: {s}", .{why}),
+            else => "",
+        };
+        if (err_msg.len == 0) {
+            state.dismissed = false;
+            state.last_err_len = 0;
+        } else if (!std.mem.eql(u8, state.last_err_buf[0..state.last_err_len], err_msg)) {
+            const n: u8 = @intCast(@min(err_msg.len, state.last_err_buf.len));
+            @memcpy(state.last_err_buf[0..n], err_msg[0..n]);
+            state.last_err_len = n;
+            state.dismissed = false;
+        }
+        const snackbar_msg = if (state.dismissed) "" else err_msg;
         const status: []const u8 = switch (self.saved) {
             .saved => "Saved",
             .changed => "Saving\u{2026}",
-            .failed => |why| cx.fmt("Not saved: {s}", .{why}),
+            .failed => "",
         };
         return cx.make(ui.Column{ .cross_axis_alignment = .stretch, .children = &.{
             cx.make(ui.TitleBar{
@@ -59,10 +83,14 @@ pub const Editor = struct {
                 .on_drag = self.on_drag,
                 .maximized = self.maximized,
             }),
-            cx.make(ui.Expanded{ .child = cx.make(ui.Padding{ .padding = .all(12), .child = body }) }),
+            cx.make(ui.Expanded{ .child = cx.make(ui.Snackbar{
+                .message = snackbar_msg,
+                .on_dismiss = .of(state, State.dismiss),
+                .child = cx.make(ui.Padding{ .padding = .all(12), .child = body }),
+            }) }),
             if (self.doc != null) cx.make(ui.Padding{ .padding = .{ .left = 16, .right = 16, .bottom = 10 }, .child = cx.make(ui.Row{ .spacing = 16, .children = &.{
                 cx.make(ui.Expanded{ .child = cx.make(ui.Text{ .text = self.path orelse "", .style = .{ .size = 15, .color = t.on_surface_variant }, .wrap = false, .ellipsis = true }) }),
-                cx.make(ui.Text{ .text = status, .style = .{ .size = 15, .color = if (self.saved == .failed) t.@"error" else t.on_surface_variant }, .wrap = false }),
+                cx.make(ui.Text{ .text = status, .style = .{ .size = 15, .color = t.on_surface_variant }, .wrap = false }),
             } }) }) else cx.make(ui.Empty{}),
         } });
     }
