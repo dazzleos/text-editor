@@ -49,9 +49,7 @@ const StartActions = struct {
     open_path: ?[:0]const u8 = null,
 
     fn initName(s: *StartActions, initial: []const u8) void {
-        const n = @min(initial.len, s.name_buf.len);
-        @memcpy(s.name_buf[0..n], initial[0..n]);
-        s.name_len = n;
+        s.setName(initial);
     }
 
     fn name(s: *const StartActions) []const u8 {
@@ -59,7 +57,8 @@ const StartActions = struct {
     }
 
     fn setName(s: *StartActions, text: []const u8) void {
-        const n = @min(text.len, s.name_buf.len);
+        var n = @min(text.len, s.name_buf.len);
+        while (n > 0 and n < text.len and text[n] & 0xc0 == 0x80) n -= 1;
         @memcpy(s.name_buf[0..n], text[0..n]);
         s.name_len = n;
     }
