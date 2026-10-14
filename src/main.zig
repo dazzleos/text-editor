@@ -191,4 +191,3 @@ test {
     _ = view;
     _ = syntax;
 }
-

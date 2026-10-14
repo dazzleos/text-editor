@@ -284,4 +284,3 @@ test "making a new file with a pre-populated name, and remembering recent files"
     try testing.expectEqual(@as(usize, 1), r2.slice().len);
     try testing.expectEqualStrings(p1, r2.slice()[0]);
 }
-

@@ -290,4 +290,3 @@ test "the text fills the window; whether it is saved, and without a file the sta
     click(u, up(findText(u.root.?, "todo.txt").?, ui.ListItem).?);
     try testing.expectEqualStrings("/data/user/todo.txt", sink.opened.?);
 }
-
