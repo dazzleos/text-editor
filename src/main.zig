@@ -59,7 +59,7 @@ fn run(init: std.process.Init, initial_path: ?[:0]const u8) !void {
         // Wait for something to do, or until it is time to save.
         var timeout: u64 = std.math.maxInt(u64);
         if (e.changed_at) |at| timeout = (at + file.save_delay_ns) -| sys.nowNs() + std.time.ns_per_ms;
-        if (!try host.app.step(timeout)) return;
+        if (!try host.step(timeout)) return;
         // Saved a moment after typing stops.
         if (e.changed_at) |at| if (sys.nowNs() >= at + file.save_delay_ns) {
             e.changed_at = null;
