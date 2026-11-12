@@ -12,17 +12,17 @@
 
 const std = @import("std");
 const sys = @import("sys");
-const locale = @import("locale");
-const ui = @import("ui");
+const kete = @import("kete");
+const kete_vc4 = @import("kete_vc4");
 const file = @import("file.zig");
 const view = @import("view.zig");
 const syntax = @import("syntax.zig");
 
 const print = sys.print;
 
-pub fn main(init: std.process.Init.Minimal) u8 {
+pub fn main(init: std.process.Init) u8 {
     sys.logToKmsgIfStderr();
-    var args = init.args.iterate();
+    var args = init.minimal.args.iterate();
     _ = args.skip();
     const path: ?[:0]const u8 = if (args.next()) |p| std.mem.span(p.ptr) else null;
     run(init, path) catch |err| {
@@ -32,159 +32,185 @@ pub fn main(init: std.process.Init.Minimal) u8 {
     return 0;
 }
 
-/// Notes a change to the text, for saving it in a moment.
-const Changes = struct {
-    at: ?u64 = null,
-
-    fn changed(c: *Changes) void {
-        c.at = sys.nowNs();
-    }
-};
-
-/// Actions on the start screen (when opened without a file).
-const StartActions = struct {
-    name_buf: [ui.TextField.capacity]u8 = undefined,
-    name_len: usize = 0,
-    make_requested: bool = false,
-    open_path: ?[:0]const u8 = null,
-
-    fn initName(s: *StartActions, initial: []const u8) void {
-        s.setName(initial);
-    }
-
-    fn name(s: *const StartActions) []const u8 {
-        return s.name_buf[0..s.name_len];
-    }
-
-    fn setName(s: *StartActions, text: []const u8) void {
-        var n = @min(text.len, s.name_buf.len);
-        while (n > 0 and n < text.len and text[n] & 0xc0 == 0x80) n -= 1;
-        @memcpy(s.name_buf[0..n], text[0..n]);
-        s.name_len = n;
-    }
-
-    fn requestMake(s: *StartActions) void {
-        s.make_requested = true;
-    }
-
-    fn requestOpen(s: *StartActions, p: [:0]const u8) void {
-        s.open_path = p;
-    }
-};
-
-fn run(init: std.process.Init.Minimal, initial_path: ?[:0]const u8) !void {
-    locale.current = locale.load().language;
+fn run(init: std.process.Init, initial_path: ?[:0]const u8) !void {
     const gpa = std.heap.page_allocator;
-    const a = try ui.App.open(gpa, init.environ, .{
-        .title = if (initial_path) |p| std.fs.path.basename(p) else "Text Editor",
-        .app_id = "dazzle-text-editor",
+    var host: kete_vc4.Host = undefined;
+    try host.init(gpa, init.io, init.minimal.environ, .{ .app_id = "dazzle-text-editor" });
+    defer host.deinit();
+
+    var e: Editor = .{ .gpa = gpa, .recent = .load(gpa, file.recent_file) };
+    defer e.deinit();
+    e.default_name = file.defaultNewName(&e.default_buf, file.user_dir);
+    e.start_name = .init(e.default_name);
+    if (initial_path) |p| e.open(p);
+    // What is not saved yet is when the window closes.
+    defer e.saveNow();
+
+    const root: Root = .{ .e = &e };
+    e.window = try host.app.openWindow(.{
+        .title = e.title(),
+        .root = .of(&root),
         .size = view.open_size,
         .min_size = view.min_size,
+        .on_close_request = .close,
     });
-    defer a.close();
-
-    var recent = file.Recent.load(gpa, file.recent_file);
-    defer recent.deinit();
-
-    var default_buf: [256]u8 = undefined;
-    const default_name = file.defaultNewName(&default_buf, file.user_dir);
-    var start: StartActions = .{};
-    start.initName(default_name);
-
-    var path_buf: [4096]u8 = undefined;
-    var path: ?[:0]const u8 = initial_path;
-    // The file's text, if it can be edited.
-    var doc: ?ui.TextDocument = null;
-    var message: []const u8 = "";
-    if (path) |p| {
-        if (file.read(gpa, p)) |text| {
-            defer gpa.free(text);
-            doc = try ui.TextDocument.init(gpa, text);
-            recent.record(file.recent_file, p);
-        } else |err| message = file.describeOpenError(err);
-    }
-    defer if (doc) |*d| d.deinit();
-    // Code is coloured, by the file's name.
-    var highlighter: ?ui.TextArea.Highlighter = if (path) |p| syntax.highlighter(syntax.languageOf(std.fs.path.basename(p))) else null;
-    var saved_version: u64 = 0;
-    var save_failure: ?[]const u8 = null;
-    var changes: Changes = .{};
-    // What is not saved yet is when the window closes.
-    defer saveNow(path, doc, &saved_version, &save_failure);
 
     while (true) {
-        // Wait for input, or until it is time to save.
-        var timeout: u64 = 60 * std.time.ns_per_s;
-        if (changes.at) |at| timeout = @min(timeout, (at + file.save_delay_ns) -| sys.nowNs() + std.time.ns_per_ms);
-        if (!try a.step(timeout)) return;
-        const now = sys.nowNs();
-        a.takeInput();
-
-        if (start.make_requested) {
-            start.make_requested = false;
-            if (file.makeNewFile(&path_buf, file.user_dir, start.name())) |created| {
-                doc = try ui.TextDocument.init(gpa, "");
-                path = created;
-                highlighter = syntax.highlighter(syntax.languageOf(std.fs.path.basename(created)));
-                message = "";
-                recent.record(file.recent_file, created);
-            } else |err| {
-                message = file.describeMakeError(err);
-            }
-            a.dirty = true;
-        }
-        if (start.open_path) |open_p| {
-            start.open_path = null;
-            const owned = std.mem.printSentinel(&path_buf, "{s}", .{open_p}, 0) catch open_p;
-            path = owned;
-            if (file.read(gpa, owned)) |text| {
-                defer gpa.free(text);
-                doc = try ui.TextDocument.init(gpa, text);
-                highlighter = syntax.highlighter(syntax.languageOf(std.fs.path.basename(owned)));
-                message = "";
-                recent.record(file.recent_file, owned);
-            } else |err| message = file.describeOpenError(err);
-            a.dirty = true;
-        }
-
+        // Wait for something to do, or until it is time to save.
+        var timeout: u64 = std.math.maxInt(u64);
+        if (e.changed_at) |at| timeout = (at + file.save_delay_ns) -| sys.nowNs() + std.time.ns_per_ms;
+        if (!try host.app.step(timeout)) return;
         // Saved a moment after typing stops.
-        if (changes.at) |at| if (now >= at + file.save_delay_ns) {
-            changes.at = null;
-            saveNow(path, doc, &saved_version, &save_failure);
-            a.dirty = true;
+        if (e.changed_at) |at| if (sys.nowNs() >= at + file.save_delay_ns) {
+            e.changed_at = null;
+            e.saveNow();
+            e.redraw();
         };
+    }
+}
 
-        const d: ?*ui.TextDocument = if (doc) |*dd| dd else null;
-        const saved: view.Saved = if (save_failure) |why| .{ .failed = why } else if (d != null and d.?.version != saved_version) .changed else .saved;
-        try a.draw(now, view.Editor{
-            .path = path,
+/// The window's root: the editor, as it is now.
+const Root = struct {
+    e: *Editor,
+
+    pub fn build(r: *const Root, cx: *kete.BuildContext) kete.Widget {
+        const e = r.e;
+        const d: ?*kete.TextDocument = if (e.doc) |*dd| dd else null;
+        const saved: view.Saved = if (e.save_failure) |why| .{ .failed = why } else if (d != null and d.?.version != e.saved_version) .changed else .saved;
+        return cx.make(view.Editor{
+            .path = e.path,
             .doc = d,
-            .message = message,
-            .highlighter = highlighter,
+            .message = e.message,
+            .highlighter = e.highlighter,
             .saved = saved,
-            .default_name = default_name,
-            .recent = recent.slice(),
-            .on_name_changed = .of(&start, StartActions.setName),
-            .on_new_file = .of(&start, StartActions.requestMake),
-            .on_open_recent = .of(&start, StartActions.requestOpen),
-            .on_changed = .of(&changes, Changes.changed),
+            .default_name = e.default_name,
+            .recent = e.recent.slice(),
+            .on_name_changed = .of(&e.start_name, Name.set),
+            .on_new_file = .of(e, Editor.makeFile),
+            .on_open_recent = .of(e, Editor.openRecent),
+            .on_changed = .of(e, Editor.changed),
         });
     }
-}
+};
 
-/// Saves the text if it changed since it was last saved.
-fn saveNow(path: ?[:0]const u8, doc: ?ui.TextDocument, saved_version: *u64, failure: *?[]const u8) void {
-    const p = path orelse return;
-    const d = doc orelse return;
-    if (d.version == saved_version.*) return;
-    if (file.save(p, d.text())) {
-        saved_version.* = d.version;
-        failure.* = null;
-    } else |err| {
-        failure.* = file.describeSaveError(err);
-        print(sys.log_warning ++ "dazzle-text-editor: cannot save {s}: {s}\n", .{ p, @errorName(err) });
+/// The new file's name, as typed on the start screen.
+const Name = struct {
+    buf: [kete.TextField.capacity]u8 = undefined,
+    len: usize = 0,
+
+    fn init(text: []const u8) Name {
+        var n: Name = .{};
+        n.set(text);
+        return n;
     }
-}
+
+    fn get(n: *const Name) []const u8 {
+        return n.buf[0..n.len];
+    }
+
+    fn set(n: *Name, text: []const u8) void {
+        var len = @min(text.len, n.buf.len);
+        while (len > 0 and len < text.len and text[len] & 0xc0 == 0x80) len -= 1;
+        @memcpy(n.buf[0..len], text[0..len]);
+        n.len = len;
+    }
+};
+
+/// The file being edited (or, with none, the start screen), and whether it
+/// is saved.
+const Editor = struct {
+    gpa: std.mem.Allocator,
+    window: ?*kete.App.Window = null,
+    recent: file.Recent,
+    /// The start screen's name for a new file, pre-populated.
+    default_buf: [256]u8 = undefined,
+    default_name: []const u8 = "",
+    start_name: Name = .{},
+    path_buf: [4096]u8 = undefined,
+    path: ?[:0]const u8 = null,
+    /// The file's text, if it can be edited.
+    doc: ?kete.TextDocument = null,
+    /// Why it cannot be, or a new file could not be made.
+    message: []const u8 = "",
+    /// Code is coloured, by the file's name.
+    highlighter: ?kete.TextArea.Highlighter = null,
+    saved_version: u64 = 0,
+    save_failure: ?[]const u8 = null,
+    /// When the text last changed, if it is not saved since.
+    changed_at: ?u64 = null,
+
+    fn deinit(e: *Editor) void {
+        if (e.doc) |*d| d.deinit();
+        e.recent.deinit();
+    }
+
+    /// The window's title: the file's name.
+    fn title(e: *const Editor) []const u8 {
+        return if (e.path) |p| std.fs.path.basename(p) else "Text Editor";
+    }
+
+    fn redraw(e: *Editor) void {
+        if (e.window) |w| w.dirty = true;
+    }
+
+    /// Edits the file at `p` (or says why it cannot).
+    fn open(e: *Editor, p: []const u8) void {
+        const owned = std.mem.printSentinel(&e.path_buf, "{s}", .{p}, 0) catch {
+            e.message = file.describeOpenError(error.Unexpected);
+            return;
+        };
+        e.path = owned;
+        e.message = "";
+        if (file.read(e.gpa, owned)) |text| {
+            defer e.gpa.free(text);
+            e.edit(kete.TextDocument.init(e.gpa, text));
+            e.recent.record(file.recent_file, owned);
+        } else |err| e.message = file.describeOpenError(err);
+        e.highlighter = syntax.highlighter(syntax.languageOf(std.fs.path.basename(owned)));
+        if (e.window) |w| w.setTitle(e.title());
+    }
+
+    fn edit(e: *Editor, doc: error{OutOfMemory}!kete.TextDocument) void {
+        if (e.doc) |*d| d.deinit();
+        e.doc = doc catch null;
+        e.saved_version = 0;
+        e.save_failure = null;
+        e.changed_at = null;
+        if (e.doc == null) e.message = file.describeOpenError(error.TooBig);
+    }
+
+    /// Makes the new file named on the start screen, and edits it.
+    fn makeFile(e: *Editor) void {
+        var buf: [4096]u8 = undefined;
+        if (file.makeNewFile(&buf, file.user_dir, e.start_name.get())) |created| {
+            e.open(created);
+        } else |err| {
+            e.message = file.describeMakeError(err);
+        }
+    }
+
+    fn openRecent(e: *Editor, p: [:0]const u8) void {
+        e.open(p);
+    }
+
+    fn changed(e: *Editor) void {
+        e.changed_at = sys.nowNs();
+    }
+
+    /// Saves the text if it changed since it was last saved.
+    fn saveNow(e: *Editor) void {
+        const p = e.path orelse return;
+        const d = e.doc orelse return;
+        if (d.version == e.saved_version) return;
+        if (file.save(p, d.text())) {
+            e.saved_version = d.version;
+            e.save_failure = null;
+        } else |err| {
+            e.save_failure = file.describeSaveError(err);
+            print(sys.log_warning ++ "dazzle-text-editor: cannot save {s}: {s}\n", .{ p, @errorName(err) });
+        }
+    }
+};
 
 test {
     _ = file;

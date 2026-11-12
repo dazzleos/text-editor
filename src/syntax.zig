@@ -1,12 +1,12 @@
 //! Colouring code: JSON, Python and Zig, chosen by the file's name. Each
 //! highlighter reads the whole text and says what each byte is (see
-//! `ui.Highlight`); it is quick and forgiving rather than a full parser, so
+//! `kete.TextArea.Highlight`); it is quick and forgiving rather than a full parser, so
 //! text that does not parse is still coloured as far as it makes sense.
 
 const std = @import("std");
-const ui = @import("ui");
+const kete = @import("kete");
 
-const Highlight = ui.Highlight;
+const Highlight = kete.TextArea.Highlight;
 
 pub const Language = enum { plain, json, python, zig };
 
@@ -26,7 +26,7 @@ pub fn languageOf(name: []const u8) Language {
 }
 
 /// The highlighter for `language`, if it is code.
-pub fn highlighter(language: Language) ?ui.TextArea.Highlighter {
+pub fn highlighter(language: Language) ?kete.TextArea.Highlighter {
     return switch (language) {
         .plain => null,
         .json => json,
@@ -331,7 +331,7 @@ fn isIntType(word: []const u8) bool {
 const testing = std.testing;
 
 /// The text with each byte's highlight, as one letter each (`.` plain).
-fn classes(f: ui.TextArea.Highlighter, text: []const u8) ![]u8 {
+fn classes(f: kete.TextArea.Highlighter, text: []const u8) ![]u8 {
     const hs = try testing.allocator.alloc(Highlight, text.len);
     defer testing.allocator.free(hs);
     @memset(hs, .plain);
@@ -352,7 +352,7 @@ fn classes(f: ui.TextArea.Highlighter, text: []const u8) ![]u8 {
     return out;
 }
 
-fn expectClasses(f: ui.TextArea.Highlighter, text: []const u8, want: []const u8) !void {
+fn expectClasses(f: kete.TextArea.Highlighter, text: []const u8, want: []const u8) !void {
     const got = try classes(f, text);
     defer testing.allocator.free(got);
     testing.expectEqualStrings(want, got) catch |err| {
