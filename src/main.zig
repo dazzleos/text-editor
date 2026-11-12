@@ -135,7 +135,7 @@ fn run(init: std.process.Init.Minimal, initial_path: ?[:0]const u8) !void {
         }
         if (start.open_path) |open_p| {
             start.open_path = null;
-            const owned = std.fmt.bufPrintZ(&path_buf, "{s}", .{open_p}) catch open_p;
+            const owned = std.mem.printSentinel(&path_buf, "{s}", .{open_p}, 0) catch open_p;
             path = owned;
             if (file.read(gpa, owned)) |text| {
                 defer gpa.free(text);

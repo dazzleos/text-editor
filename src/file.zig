@@ -56,8 +56,8 @@ pub fn save(path: []const u8, text: []const u8) SaveError!void {
     var tmp_buf: [4096]u8 = undefined;
     var path_buf: [4096]u8 = undefined;
     const dir = std.fs.path.dirname(path) orelse ".";
-    const tmp = std.fmt.bufPrintZ(&tmp_buf, "{s}/.{s}.saving", .{ dir, std.fs.path.basename(path) }) catch return error.Unexpected;
-    const dest = std.fmt.bufPrintZ(&path_buf, "{s}", .{path}) catch return error.Unexpected;
+    const tmp = std.mem.printSentinel(&tmp_buf, "{s}/.{s}.saving", .{ dir, std.fs.path.basename(path) }, 0) catch return error.Unexpected;
+    const dest = std.mem.printSentinel(&path_buf, "{s}", .{path}, 0) catch return error.Unexpected;
     // The permissions it has (a new file's otherwise).
     var stx: linux.Statx = undefined;
     const mode: u32 = if (linux.errno(linux.statx(linux.AT.FDCWD, dest, 0, .{ .MODE = true }, &stx)) == .SUCCESS) stx.mode & 0o777 else 0o644;
@@ -129,7 +129,7 @@ pub fn makeNewFile(buf: []u8, dir: []const u8, raw_name: []const u8) MakeError![
     const dot = std.mem.lastIndexOfScalar(u8, trimmed, '.');
     const has_ext = if (dot) |d| d > 0 and d + 1 < trimmed.len else false;
     const suffix = if (has_ext) "" else ".txt";
-    const path = std.fmt.bufPrintZ(buf, "{s}/{s}{s}", .{ dir, trimmed, suffix }) catch return error.Unexpected;
+    const path = std.mem.printSentinel(buf, "{s}/{s}{s}", .{ dir, trimmed, suffix }, 0) catch return error.Unexpected;
     sys.files.writeNew(path, "") catch |err| return switch (err) {
         error.Exists => error.Exists,
         error.AccessDenied => error.AccessDenied,
@@ -151,7 +151,7 @@ pub const Recent = struct {
         while (lines.next()) |line| {
             if (line.len == 0 or r.items.items.len >= max_recent) continue;
             if (r.indexOf(line) != null) continue;
-            const copy = gpa.dupeZ(u8, line) catch break;
+            const copy = gpa.dupeSentinel(u8, line, 0) catch break;
             if (linux.errno(linux.access(copy.ptr, linux.F_OK)) != .SUCCESS) {
                 gpa.free(copy);
                 continue;
@@ -189,7 +189,7 @@ pub const Recent = struct {
                 return;
             };
         } else {
-            const copy = self.gpa.dupeZ(u8, file_path) catch return;
+            const copy = self.gpa.dupeSentinel(u8, file_path, 0) catch return;
             self.items.insert(self.gpa, 0, copy) catch {
                 self.gpa.free(copy);
                 return;
@@ -213,11 +213,11 @@ const testing = std.testing;
 
 test "reading and saving a text file, whole" {
     var dir_buf: [64]u8 = undefined;
-    const dir = try std.fmt.bufPrintZ(&dir_buf, "/tmp/dazzle-text-editor-test-{d}", .{linux.getpid()});
+    const dir = try std.mem.printSentinel(&dir_buf, "/tmp/dazzle-text-editor-test-{d}", .{linux.getpid()}, 0);
     _ = linux.mkdir(dir, 0o755);
     defer sys.files.removeTree(dir);
     var path_buf: [128]u8 = undefined;
-    const path = try std.fmt.bufPrintZ(&path_buf, "{s}/notes.txt", .{dir});
+    const path = try std.mem.printSentinel(&path_buf, "{s}/notes.txt", .{dir}, 0);
     try sys.files.writeNew(path, "hello\n");
     _ = linux.chmod(path, 0o600);
     const text = try read(testing.allocator, path);
@@ -232,20 +232,20 @@ test "reading and saving a text file, whole" {
     _ = linux.statx(linux.AT.FDCWD, path, 0, .{ .MODE = true }, &stx);
     try testing.expectEqual(@as(u32, 0o600), stx.mode & 0o777);
     var tmp_buf: [128]u8 = undefined;
-    try testing.expect(linux.errno(linux.access(try std.fmt.bufPrintZ(&tmp_buf, "{s}/.notes.txt.saving", .{dir}), linux.F_OK)) == .NOENT);
+    try testing.expect(linux.errno(linux.access(try std.mem.printSentinel(&tmp_buf, "{s}/.notes.txt.saving", .{dir}, 0), linux.F_OK)) == .NOENT);
 
     // Not text, or not there.
-    const bin = try std.fmt.bufPrintZ(&tmp_buf, "{s}/data.bin", .{dir});
+    const bin = try std.mem.printSentinel(&tmp_buf, "{s}/data.bin", .{dir}, 0);
     try sys.files.writeNew(bin, "\x00\x01\xff");
     try testing.expectError(error.NotText, read(testing.allocator, bin));
-    try testing.expectError(error.NotFound, read(testing.allocator, try std.fmt.bufPrintZ(&tmp_buf, "{s}/none.txt", .{dir})));
+    try testing.expectError(error.NotFound, read(testing.allocator, try std.mem.printSentinel(&tmp_buf, "{s}/none.txt", .{dir}, 0)));
     // A folder that is not there.
     try testing.expectError(error.Unexpected, save("/nonexistent/notes.txt", "x"));
 }
 
 test "making a new file with a pre-populated name, and remembering recent files" {
     var dir_buf: [64]u8 = undefined;
-    const dir = try std.fmt.bufPrintZ(&dir_buf, "/tmp/dazzle-text-editor-recent-{d}", .{linux.getpid()});
+    const dir = try std.mem.printSentinel(&dir_buf, "/tmp/dazzle-text-editor-recent-{d}", .{linux.getpid()}, 0);
     _ = linux.mkdir(dir, 0o755);
     defer sys.files.removeTree(dir);
 
@@ -267,7 +267,7 @@ test "making a new file with a pre-populated name, and remembering recent files"
 
     // Recent files: newest first, deduplicated, and missing files skipped on load.
     var list_buf: [256]u8 = undefined;
-    const list_path = try std.fmt.bufPrintZ(&list_buf, "{s}/.recent-text-files", .{dir});
+    const list_path = try std.mem.printSentinel(&list_buf, "{s}/.recent-text-files", .{dir}, 0);
     var r = Recent.load(testing.allocator, list_path);
     try testing.expectEqual(@as(usize, 0), r.slice().len);
     r.record(list_path, p1);
