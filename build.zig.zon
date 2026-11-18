@@ -1,0 +1,21 @@
+.{
+    .name = .text_editor,
+    .version = "0.0.0",
+    .fingerprint = 0xd97d6849f7ebb322, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{
+        // Dazzle's modules (kete_vc4 and the rest) and tools, which
+        // Text Editor is built with. To build with a Dazzle checkout beside
+        // it instead: `zig build --fork=../dazzle`.
+        .dazzle = .{
+            .url = "git+https://github.com/dazzleos/dazzle#dd6aa438257147fd3d1b13405fd387cab93fb289",
+            .hash = "dazzle-0.0.0-ze61IGaZ2wAhJtwgST2emeCfly2ZRynwd4BfDaRst33-",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+    },
+}
