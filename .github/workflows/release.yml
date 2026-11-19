@@ -13,9 +13,11 @@ on:
 permissions:
   contents: read
 
+# A newer push cancels a run, except on the default branch: there it
+# may be replacing the latest release, and would leave none.
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref_name != github.event.repository.default_branch }}
 
 jobs:
   build:
@@ -49,11 +51,14 @@ jobs:
           ../dazzle/scripts/zig build
           ls -l zig-out/apps
 
+      # Handed to the publish job (and kept a day: the release keeps
+      # them).
       - uses: actions/upload-artifact@v4
         with:
           name: text-editor
           path: text-editor/zig-out/apps/
           if-no-files-found: error
+          retention-days: 1
 
   publish:
     needs: build
