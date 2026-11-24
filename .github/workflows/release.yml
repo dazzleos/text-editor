@@ -105,3 +105,17 @@ jobs:
           gh release list --limit 100 --json tagName,createdAt \
             --jq '[.[] | select(.tagName | startswith("build-"))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' |
             while read -r old; do gh release delete "$old" --cleanup-tag --yes; done
+
+      # The store lists this build at once (not at its next scheduled run,
+      # which GitHub often runs late or not at all). STORE_TOKEN: a token
+      # that may start dazzleos/store's workflows; without it, the store
+      # lists the build when it next runs.
+      - name: Have the store list it
+        env:
+          GH_TOKEN: ${{ secrets.STORE_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "No STORE_TOKEN: the store lists this build when it next runs"
+            exit 0
+          fi
+          gh workflow run store.yml -R dazzleos/store
