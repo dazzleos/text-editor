@@ -8,8 +8,8 @@
         // Text Editor is built with. To build with a Dazzle checkout beside
         // it instead: `zig build --fork=../dazzle`.
         .dazzle = .{
-            .url = "git+https://github.com/dazzleos/dazzle#330825a60e55e758245d6aff7ec6f5a97d048d9b",
-            .hash = "dazzle-0.0.0-ze61IFSusQAVknwzelwRMaVg-gUPgLZxAn45wDPA6Ra6",
+            .url = "git+https://github.com/dazzleos/dazzle#b849c27ba7a42b26161675b38017609125c90f8e",
+            .hash = "dazzle-0.0.0-ze61II-6sQCIouWz-n5OXDNZ959YL-SYHDBMSrLAsjXk",
         },
     },
     .paths = .{
